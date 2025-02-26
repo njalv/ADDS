@@ -7,8 +7,6 @@ param(
     [Parameter(Mandatory)] [string]$Site,
     [Parameter(Mandatory)] [string]$StorageName,
     [Parameter(Mandatory)] [string]$ArtifactoryUrl
-    
-
 )
 
 Start-Transcript -Path "C:\Temp\DomainControllerSetup.log" -Append
@@ -31,7 +29,6 @@ try {
     exit 1
 }
 
-
 try {
     Write-Output "$(Get-Date): Installing NuGet package provider from Artifactory..."
 
@@ -44,109 +41,190 @@ try {
         ItemType = 'Directory'
         Force    = $true
     }
-    [System.IO.DirectoryInfo] $NuGetProviderDirectory = New-Item @NuGetProviderDirectoryParameters
-
-    [hashtable] $NuGetProviderDownloadParameters = @{
-        Uri    = $NuGetProviderDownloadUrl
-        OutFile = '{0}\Microsoft.PackageManagement.NuGetProvider.dll' -f $NuGetProviderDirectory.FullName
+    
+    if (-not (Test-Path -Path ('{0}\PackageManagement\ProviderAssemblies\NuGet\{1}' -f $env:ProgramFiles, $NuGetProviderVersion))) {
+        [System.IO.DirectoryInfo] $NuGetProviderDirectory = New-Item @NuGetProviderDirectoryParameters
+    } else {
+        [System.IO.DirectoryInfo] $NuGetProviderDirectory = Get-Item -Path ('{0}\PackageManagement\ProviderAssemblies\NuGet\{1}' -f $env:ProgramFiles, $NuGetProviderVersion)
     }
-    $null = Invoke-WebRequest @NuGetProviderDownloadParameters
+
+    $providerDllPath = '{0}\Microsoft.PackageManagement.NuGetProvider.dll' -f $NuGetProviderDirectory.FullName
+    if (-not (Test-Path -Path $providerDllPath)) {
+        [hashtable] $NuGetProviderDownloadParameters = @{
+            Uri     = $NuGetProviderDownloadUrl
+            OutFile = $providerDllPath
+        }
+        $null = Invoke-WebRequest @NuGetProviderDownloadParameters
+    }
 
     $null = Import-PackageProvider -Name 'NuGet' -Force
 
     Write-Output "$(Get-Date): Registering NuGet package source via Artifactory..."
-    [hashtable] $PackageSourceParameters = @{
-        Name              = 'NuGet-Artifactory'
-        Location          = '{0}/artifactory/api/nuget/nuget-remote' -f $ArtifactoryUrl
-        ProviderName      = 'NuGet'
-        Trusted           = $true
-        Force             = $true
-        ForceBootstrap    = $true
+    
+    $pkgSourceExists = Get-PackageSource -Name 'NuGet-Artifactory' -ErrorAction SilentlyContinue
+    if (-not $pkgSourceExists) {
+        [hashtable] $PackageSourceParameters = @{
+            Name           = 'NuGet-Artifactory'
+            Location       = '{0}/artifactory/api/nuget/nuget-remote' -f $ArtifactoryUrl
+            ProviderName   = 'NuGet'
+            Trusted        = $true
+            Force          = $true
+            ForceBootstrap = $true
+        }
+        $null = Register-PackageSource @PackageSourceParameters
+    } else {
+        Write-Output "$(Get-Date): Package source 'NuGet-Artifactory' already exists, skipping registration."
     }
-    $null = Register-PackageSource @PackageSourceParameters
 
     Write-Output "$(Get-Date): Registering PowerShell repository via Artifactory..."
-    [hashtable] $RepositoryParameters = @{
-        Name                     = 'ArtifactoryPSGallery'
-        SourceLocation           = '{0}/artifactory/api/nuget/psgallery-nuget-remote' -f $ArtifactoryUrl
-        PublishLocation          = '{0}/artifactory/api/nuget/psgallery-nuget-remote/package/' -f $ArtifactoryUrl
-        ScriptSourceLocation     = '{0}/artifactory/api/nuget/psgallery-nuget-remote/items/psscript' -f $ArtifactoryUrl
-        ScriptPublishLocation    = '{0}/artifactory/api/nuget/psgallery-nuget-remote/package/' -f $ArtifactoryUrl
-        InstallationPolicy       = 'Trusted'
-        PackageManagementProvider = 'NuGet'
+    $repoExists = Get-PSRepository -Name 'ArtifactoryPSGallery' -ErrorAction SilentlyContinue
+    if (-not $repoExists) {
+        [hashtable] $RepositoryParameters = @{
+            Name                      = 'ArtifactoryPSGallery'
+            SourceLocation            = '{0}/artifactory/api/nuget/psgallery-nuget-remote' -f $ArtifactoryUrl
+            PublishLocation           = '{0}/artifactory/api/nuget/psgallery-nuget-remote/package/' -f $ArtifactoryUrl
+            ScriptSourceLocation      = '{0}/artifactory/api/nuget/psgallery-nuget-remote/items/psscript' -f $ArtifactoryUrl
+            ScriptPublishLocation     = '{0}/artifactory/api/nuget/psgallery-nuget-remote/package/' -f $ArtifactoryUrl
+            InstallationPolicy        = 'Trusted'
+            PackageManagementProvider = 'NuGet'
+        }
+        $null = Register-PSRepository @RepositoryParameters
+    } else {
+        Write-Output "$(Get-Date): PS Repository 'ArtifactoryPSGallery' already exists, skipping registration."
     }
-    $null = Register-PSRepository @RepositoryParameters
 
     Write-Output "$(Get-Date): NuGet provider installed and repositories registered via Artifactory."
 }
 catch {
-    Write-Output "$(Get-Date): Error configuring Artifactory as a NuGet/PSGallery proxy - $($_.Exception.Message)"
-    throw $_.Exception
+    if ($_.Exception.Message -like "*Repository*exists*") {
+        Write-Output "$(Get-Date): Repository already exists, continuing."
+    } else {
+        Write-Output "$(Get-Date): Error configuring Artifactory as a NuGet/PSGallery proxy - $($_.Exception.Message)"
+        throw $_.Exception
+    }
 }
-
 
 try {
     Write-Output "$(Get-Date): Installing Az module from Artifactory..."
-    Install-Module Az -Repository 'ArtifactoryPSGallery' -Scope AllUsers -Force -AllowClobber
+    if (-not (Get-Module -ListAvailable -Name Az)) {
+        Install-Module Az -Repository 'ArtifactoryPSGallery' -Scope AllUsers -Force -AllowClobber
+        Write-Output "$(Get-Date): Az module installed successfully."
+    } else {
+        Write-Output "$(Get-Date): Az module is already installed, skipping installation."
+    }
     
     Import-Module Az.Accounts -Force
 
     Connect-AzAccount -Identity
 
-    Write-Output "$(Get-Date): Az module installed and imported successfully."
+    Write-Output "$(Get-Date): Az module imported successfully."
 }
 catch {
-    Write-Output "$(Get-Date): Error installing Az module - $($_.Exception.Message)"
-    throw $_.Exception
+    if ($_.Exception.Message -like "*Module*exists*" -or $_.Exception.Message -like "*already installed*") {
+        Write-Output "$(Get-Date): Az module already exists, continuing."
+    } else {
+        Write-Output "$(Get-Date): Error with Az module - $($_.Exception.Message)"
+        throw $_.Exception
+    }
 }
 
 try {
     Write-Output "$(Get-Date): Downloading MVP_Export.zip from Azure Storage..."
-    $ctx = New-AzStorageContext -StorageAccountName $StorageName
-    Get-AzStorageBlobContent -Blob 'MVP_Export.zip' -Container 'scripts' -Destination 'C:\Temp' -Context $ctx
+    if (-not (Test-Path -Path "C:\Temp\MVP_Export.zip")) {
+        $ctx = New-AzStorageContext -StorageAccountName $StorageName
+        Get-AzStorageBlobContent -Blob 'MVP_Export.zip' -Container 'scripts' -Destination 'C:\Temp' -Context $ctx
+        Write-Output "$(Get-Date): Download completed."
+    } else {
+        Write-Output "$(Get-Date): MVP_Export.zip already exists, skipping download."
+    }
     
-    Write-Output "$(Get-Date): Download completed. Extracting ZIP..."
-    Expand-Archive -Path "C:\Temp\MVP_Export.zip" -DestinationPath "C:\Temp"
-    Write-Output "$(Get-Date): ZIP extracted successfully."
+    if (-not (Test-Path -Path "C:\Temp\MVP_Export")) {
+        Write-Output "$(Get-Date): Extracting ZIP..."
+        Expand-Archive -Path "C:\Temp\MVP_Export.zip" -DestinationPath "C:\Temp" -Force
+        Write-Output "$(Get-Date): ZIP extracted successfully."
+    } else {
+        Write-Output "$(Get-Date): ZIP already extracted, skipping extraction."
+    }
 }
 catch {
-    Write-Output "$(Get-Date): Error downloading or extracting ZIP - $($_.Exception.Message)"
-    throw $_.Exception
+    if ($_.Exception.Message -like "*already exists*") {
+        Write-Output "$(Get-Date): File already exists, continuing."
+    } else {
+        Write-Output "$(Get-Date): Error downloading or extracting ZIP - $($_.Exception.Message)"
+        throw $_.Exception
+    }
 }
 
 try {
     Write-Output "$(Get-Date): Installing AD-Domain-Services and DNS."
-    Install-WindowsFeature AD-Domain-Services -IncludeManagementTools -Confirm:$false
-    Install-WindowsFeature -Name DNS -IncludeManagementTools -Confirm:$false
+    $addsFeature = Get-WindowsFeature -Name AD-Domain-Services
+    if (-not $addsFeature.Installed) {
+        Install-WindowsFeature AD-Domain-Services -IncludeManagementTools -Confirm:$false
+        Write-Output "$(Get-Date): AD-Domain-Services installed successfully."
+    } else {
+        Write-Output "$(Get-Date): AD-Domain-Services already installed, skipping installation."
+    }
+    
+    $dnsFeature = Get-WindowsFeature -Name DNS
+    if (-not $dnsFeature.Installed) {
+        Install-WindowsFeature -Name DNS -IncludeManagementTools -Confirm:$false
+        Write-Output "$(Get-Date): DNS installed successfully."
+    } else {
+        Write-Output "$(Get-Date): DNS already installed, skipping installation."
+    }
+    
     Start-Sleep -Seconds 30
-    Set-DnsServerForwarder -IPAddress "168.63.129.16" -PassThru
-    Write-Output "$(Get-Date): AD and DNS installed successfully."
+    
+    $currentForwarders = Get-DnsServerForwarder -ErrorAction SilentlyContinue
+    if (-not ($currentForwarders.IPAddress -contains [System.Net.IPAddress]"168.63.129.16")) {
+        Set-DnsServerForwarder -IPAddress "168.63.129.16" -PassThru
+        Write-Output "$(Get-Date): DNS forwarder set successfully."
+    } else {
+        Write-Output "$(Get-Date): DNS forwarder already set correctly, skipping configuration."
+    }
 } catch {
-    Write-Output "$(Get-Date): Error installing AD and DNS - $($_.Exception.Message)"
-    throw $_.Exception
+    if ($_.Exception.Message -like "*already installed*") {
+        Write-Output "$(Get-Date): Feature already installed, continuing."
+    } else {
+        Write-Output "$(Get-Date): Error with AD and DNS - $($_.Exception.Message)"
+        throw $_.Exception
+    }
 }
-
-
 
 try {
     Write-Output "$(Get-Date): Starting Domain Controller Installation."
-    Install-ADDSDomainController `
-        -Credential $DomainCred `
-        -SafeModeAdministratorPassword $($SafeModeCred.Password) `
-        -NoGlobalCatalog:$false `
-        -CreateDnsDelegation:$false `
-        -CriticalReplicationOnly:$false `
-        -DatabasePath "C:\Windows\NTDS" `
-        -DomainName "$DomainName" `
-        -InstallDns:$true `
-        -LogPath "C:\Windows\NTDS" `
-        -NoRebootOnCompletion:$true `
-        -SysvolPath "C:\Windows\SYSVOL" `
-        -Force:$true
-    Write-Output "$(Get-Date): Finished DC Install. Scheduling reboot."
+    $isDC = $false
+    try {
+        $isDC = (Get-ADDomainController -ErrorAction SilentlyContinue) -ne $null
+    } catch {
+        $isDC = $false
+    }
+    
+    if (-not $isDC) {
+        Install-ADDSDomainController `
+            -Credential $DomainCred `
+            -SafeModeAdministratorPassword $($SafeModeCred.Password) `
+            -NoGlobalCatalog:$false `
+            -CreateDnsDelegation:$false `
+            -CriticalReplicationOnly:$false `
+            -DatabasePath "C:\Windows\NTDS" `
+            -DomainName "$DomainName" `
+            -InstallDns:$true `
+            -LogPath "C:\Windows\NTDS" `
+            -NoRebootOnCompletion:$true `
+            -SysvolPath "C:\Windows\SYSVOL" `
+            -Force:$true
+        Write-Output "$(Get-Date): Finished DC Install. Scheduling reboot."
+    } else {
+        Write-Output "$(Get-Date): This server is already a domain controller, skipping installation."
+    }
 } catch {
-    Write-Output "$(Get-Date): Error installing Domain Controller - $($_.Exception.Message)"
-    throw $_.Exception
+    if ($_.Exception.Message -like "*already a domain controller*") {
+        Write-Output "$(Get-Date): Server is already a domain controller, continuing."
+    } else {
+        Write-Output "$(Get-Date): Error installing Domain Controller - $($_.Exception.Message)"
+        throw $_.Exception
+    }
 }
 
 try {
@@ -155,8 +233,12 @@ try {
     schtasks /Create /TN "DelayedReboot" /SC ONCE /ST $time /RU SYSTEM /TR "powershell -command Restart-Computer -Force" /F
     Write-Output "$(Get-Date): Reboot scheduled successfully."
 } catch {
-    Write-Output "$(Get-Date): Error scheduling reboot - $($_.Exception.Message)"
-    throw $_.Exception
+    if ($_.Exception.Message -like "*task already exists*") {
+        Write-Output "$(Get-Date): Reboot task already exists, continuing."
+    } else {
+        Write-Output "$(Get-Date): Error scheduling reboot - $($_.Exception.Message)"
+        throw $_.Exception
+    }
 }
 
 Write-Output "$(Get-Date): Script execution completed."
