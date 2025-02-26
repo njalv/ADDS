@@ -5,14 +5,14 @@ param(
     [Parameter(Mandatory)] [string]$DomainAdmincredsUserName,
     [Parameter(Mandatory)] [string]$DomainAdmincredsPassword,
     [Parameter(Mandatory)] [string]$Site,
-    [Parameter(Mandatory)] [string]$StorageName,
-    [Parameter(Mandatory)] [string]$ArtifactoryUrl
+    [Parameter(Mandatory)] [string]$StorageName
     
 
 )
 
 Start-Transcript -Path "C:\Temp\DomainControllerSetup.log" -Append
 $ErrorActionPreference = 'Stop'
+$ArtifactoryUrl = "https://artifactory.statnett.no"
 Write-Output "$(Get-Date): Script execution started."
 
 try {
